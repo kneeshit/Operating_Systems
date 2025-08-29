@@ -1,0 +1,512 @@
+#include "types.h"
+#include "defs.h"
+#include "param.h"
+#include "memlayout.h"
+#include "mmu.h"
+#include "arm.h"
+#include "proc.h"
+#include "spinlock.h"
+#include "uproc.h"
+
+// ----------------------------------------------------------------------
+// Process table (kept private to this file)
+// ----------------------------------------------------------------------
+static struct {
+    struct spinlock lock;
+    struct proc proc[NPROC];
+} ptable;
+
+static char *states[] = {
+  [UNUSED]    "unused",
+  [SLEEPING]  "sleep ",
+  [RUNNABLE]  "runble",
+  [RUNNING]   "run   ",
+  [ZOMBIE]    "zombie"
+};
+
+static struct proc *initproc;
+struct proc *proc;
+
+int nextpid = 1;
+extern void forkret(void);
+extern void trapret(void);
+
+static void wakeup1(void *chan);
+
+// ----------------------------------------------------------------------
+// Initialization
+// ----------------------------------------------------------------------
+void
+pinit(void)
+{
+    initlock(&ptable.lock, "ptable");
+}
+
+// ----------------------------------------------------------------------
+// Allocate a new process slot and kernel stack; prepare context/trapframe
+// ----------------------------------------------------------------------
+static struct proc*
+allocproc(void)
+{
+    struct proc *p;
+    char *sp;
+
+    acquire(&ptable.lock);
+
+    for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+        if (p->state == UNUSED) {
+            goto found;
+        }
+    }
+
+    release(&ptable.lock);
+    return 0;
+
+found:
+    p->state = EMBRYO;
+    p->pid   = nextpid++;
+    p->syscall_count = 0;       // initialize syscall counter
+    release(&ptable.lock);
+
+    // Allocate kernel stack.
+    if ((p->kstack = alloc_page()) == 0) {
+        p->state = UNUSED;
+        return 0;
+    }
+
+    sp = p->kstack + KSTACKSIZE;
+
+    // Leave room for trap frame.
+    sp -= sizeof(*p->tf);
+    p->tf = (struct trapframe*)sp;
+
+    // Set up new context to start at forkret, which returns to trapret.
+    sp -= 4;
+    *(uint*)sp = (uint)trapret;
+
+    sp -= 4;
+    *(uint*)sp = (uint)p->kstack + KSTACKSIZE;
+
+    sp -= sizeof(*p->context);
+    p->context = (struct context*)sp;
+    memset(p->context, 0, sizeof(*p->context));
+
+    // Skip the prologue push {fp, lr} in forkret on ARM.
+    p->context->lr = (uint)forkret + 4;
+
+    return p;
+}
+
+// ----------------------------------------------------------------------
+// getprocs: copy a compact table of processes to user space
+//   - ubuf: user virtual address of the first element of an array of
+//           struct uproc (defined in uproc.h).
+//   - returns number of entries copied, or -1 on error.
+// Note: We intentionally keep this helper here (inside proc.c) so it can
+//       access ptable without exposing it.
+// ----------------------------------------------------------------------
+int
+getprocs(uint64_t ubuf, int max)
+{
+    struct proc *p;
+    struct uproc u;
+    int count = 0;
+
+    acquire(&ptable.lock);
+
+    for(p = ptable.proc; p < &ptable.proc[NPROC] && count < max; p++) {
+        
+        if(p->state != UNUSED) {
+            u.pid = p->pid;
+            u.ppid = p->parent ? p->parent->pid : 0;
+            safestrcpy(u.state, states[p->state], sizeof(u.state));
+            u.syscall_count = p->syscall_count;
+            u.sz = p->sz;
+            safestrcpy(u.name, p->name, sizeof(u.name));
+
+            // Use the *calling process’s* pagetable (myproc)
+            if(copyout(proc->pgdir,
+                       ubuf + count * sizeof(u),
+                       (char*)&u,
+                       sizeof(u)) < 0) {
+                release(&ptable.lock);
+                return -1;
+            }
+            count++;
+        }
+    }
+    release(&ptable.lock);
+    return count;
+}
+
+// ----------------------------------------------------------------------
+// Panic helper used by initcode if something goes wrong
+// ----------------------------------------------------------------------
+void
+error_init(void)
+{
+    panic("failed to craft first process\n");
+}
+
+// ----------------------------------------------------------------------
+// Create the very first user process (initcode.S)
+// ----------------------------------------------------------------------
+void
+userinit(void)
+{
+    struct proc *p;
+    extern char _binary_initcode_start[], _binary_initcode_size[];
+
+    p = allocproc();
+    initproc = p;
+
+    if ((p->pgdir = kpt_alloc()) == NULL) {
+        panic("userinit: out of memory?");
+    }
+
+    inituvm(p->pgdir, _binary_initcode_start, (int)_binary_initcode_size);
+    p->sz = PTE_SZ;
+
+    memset(p->tf, 0, sizeof(*p->tf));
+    p->tf->r14_svc = (uint)error_init;
+    p->tf->spsr    = spsr_usr();
+    p->tf->sp_usr  = PTE_SZ;   // user stack
+    p->tf->lr_usr  = 0;
+    p->tf->pc      = 0;        // entry of initcode.S
+
+    safestrcpy(p->name, "initcode", sizeof(p->name));
+    p->cwd = namei("/");
+
+    p->state = RUNNABLE;
+}
+
+// ----------------------------------------------------------------------
+// Grow/shrink current process memory
+// ----------------------------------------------------------------------
+int
+growproc(int n)
+{
+    uint sz = proc->sz;
+
+    if (n > 0) {
+        if ((sz = allocuvm(proc->pgdir, sz, sz + n)) == 0)
+            return -1;
+    } else if (n < 0) {
+        if ((sz = deallocuvm(proc->pgdir, sz, sz + n)) == 0)
+            return -1;
+    }
+
+    proc->sz = sz;
+    switchuvm(proc);
+    return 0;
+}
+
+// ----------------------------------------------------------------------
+// fork: create a child process
+// ----------------------------------------------------------------------
+int
+fork(void)
+{
+    int i, pid;
+    struct proc *np;
+
+    // Allocate process.
+    if ((np = allocproc()) == 0)
+        return -1;
+
+    // Copy process state from parent.
+    if ((np->pgdir = copyuvm(proc->pgdir, proc->sz)) == 0) {
+        free_page(np->kstack);
+        np->kstack = 0;
+        np->state = UNUSED;
+        return -1;
+    }
+
+    np->sz     = proc->sz;
+    np->parent = proc;
+    *np->tf    = *proc->tf;
+
+    // Child returns 0 from fork.
+    np->tf->r0 = 0;
+
+    for (i = 0; i < NOFILE; i++) {
+        if (proc->ofile[i])
+            np->ofile[i] = filedup(proc->ofile[i]);
+    }
+
+    np->cwd = idup(proc->cwd);
+
+    pid = np->pid;
+    np->state = RUNNABLE;
+    safestrcpy(np->name, proc->name, sizeof(np->name));
+    return pid;
+}
+
+// ----------------------------------------------------------------------
+// Exit current process (does not return)
+// ----------------------------------------------------------------------
+void
+exit(void)
+{
+    struct proc *p;
+    int fd;
+
+    if (proc == initproc)
+        panic("init exiting");
+
+    // Close all files.
+    for (fd = 0; fd < NOFILE; fd++) {
+        if (proc->ofile[fd]) {
+            fileclose(proc->ofile[fd]);
+            proc->ofile[fd] = 0;
+        }
+    }
+
+    iput(proc->cwd);
+    proc->cwd = 0;
+
+    acquire(&ptable.lock);
+
+    // Wake parent.
+    wakeup1(proc->parent);
+
+    // Reparent orphaned children to init.
+    for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+        if (p->parent == proc) {
+            p->parent = initproc;
+            if (p->state == ZOMBIE)
+                wakeup1(initproc);
+        }
+    }
+
+    // Become a zombie and schedule out.
+    proc->state = ZOMBIE;
+    sched();
+    panic("zombie exit");
+}
+
+// ----------------------------------------------------------------------
+// wait: wait for a child to exit
+// ----------------------------------------------------------------------
+int
+wait(void)
+{
+    struct proc *p;
+    int havekids, pid;
+
+    acquire(&ptable.lock);
+    for (;;) {
+        havekids = 0;
+
+        for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+            if (p->parent != proc)
+                continue;
+            havekids = 1;
+            if (p->state == ZOMBIE) {
+                // Reap.
+                pid = p->pid;
+                free_page(p->kstack);
+                p->kstack = 0;
+                freevm(p->pgdir);
+                p->state = UNUSED;
+                p->pid = 0;
+                p->parent = 0;
+                p->name[0] = 0;
+                p->killed = 0;
+                release(&ptable.lock);
+                return pid;
+            }
+        }
+
+        // No children or we were killed.
+        if (!havekids || proc->killed) {
+            release(&ptable.lock);
+            return -1;
+        }
+
+        // Sleep waiting for children; recheck conditions after wake.
+        sleep(proc, &ptable.lock);
+    }
+}
+
+// ----------------------------------------------------------------------
+// Simple round-robin scheduler
+// ----------------------------------------------------------------------
+void
+scheduler(void)
+{
+    struct proc *p;
+
+    for (;;) {
+        sti();  // enable interrupts
+
+        acquire(&ptable.lock);
+        for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+            if (p->state != RUNNABLE)
+                continue;
+
+            proc = p;
+            switchuvm(p);
+            p->state = RUNNING;
+
+            swtch(&cpu->scheduler, proc->context);
+
+            // Process gave up CPU; state changed before returning.
+            proc = 0;
+        }
+        release(&ptable.lock);
+    }
+}
+
+// ----------------------------------------------------------------------
+// Enter scheduler; must hold only ptable.lock and have set proc->state
+// ----------------------------------------------------------------------
+void
+sched(void)
+{
+    int intena;
+
+    if (!holding(&ptable.lock))       panic("sched ptable.lock");
+    if (cpu->ncli != 1)               panic("sched locks");
+    if (proc->state == RUNNING)       panic("sched running");
+    if (int_enabled())                panic("sched interruptible");
+
+    intena = cpu->intena;
+    swtch(&proc->context, cpu->scheduler);
+    cpu->intena = intena;
+}
+
+// ----------------------------------------------------------------------
+// yield: give up CPU for one scheduler round
+// ----------------------------------------------------------------------
+void
+yield(void)
+{
+    acquire(&ptable.lock);
+    proc->state = RUNNABLE;
+    sched();
+    release(&ptable.lock);
+}
+
+// ----------------------------------------------------------------------
+// First run after fork: finish init that must happen in process context
+// ----------------------------------------------------------------------
+void
+forkret(void)
+{
+    static int first = 1;
+
+    // Still holding ptable.lock from scheduler.
+    release(&ptable.lock);
+
+    if (first) {
+        first = 0;
+        initlog();
+    }
+    // return to trapret via context->lr set in allocproc
+}
+
+// ----------------------------------------------------------------------
+// sleep: atomically release lk, sleep on chan, then reacquire lk
+// ----------------------------------------------------------------------
+void
+sleep(void *chan, struct spinlock *lk)
+{
+    if (proc == 0)      panic("sleep");
+    if (lk == 0)        panic("sleep without lk");
+
+    if (lk != &ptable.lock) {
+        acquire(&ptable.lock);
+        release(lk);
+    }
+
+    proc->chan  = chan;
+    proc->state = SLEEPING;
+    sched();
+
+    proc->chan = 0;
+
+    if (lk != &ptable.lock) {
+        release(&ptable.lock);
+        acquire(lk);
+    }
+}
+
+// ----------------------------------------------------------------------
+// Wake all procs sleeping on chan (ptable.lock must be held)
+// ----------------------------------------------------------------------
+static void
+wakeup1(void *chan)
+{
+    struct proc *p;
+    for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+        if (p->state == SLEEPING && p->chan == chan)
+            p->state = RUNNABLE;
+    }
+}
+
+// ----------------------------------------------------------------------
+// Public wakeup wrapper
+// ----------------------------------------------------------------------
+void
+wakeup(void *chan)
+{
+    acquire(&ptable.lock);
+    wakeup1(chan);
+    release(&ptable.lock);
+}
+
+// ----------------------------------------------------------------------
+// kill: set killed flag, wake if sleeping
+// ----------------------------------------------------------------------
+int
+kill(int pid)
+{
+    struct proc *p;
+
+    acquire(&ptable.lock);
+    for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+        if (p->pid == pid) {
+            p->killed = 1;
+            if (p->state == SLEEPING)
+                p->state = RUNNABLE;
+            release(&ptable.lock);
+            return 0;
+        }
+    }
+    release(&ptable.lock);
+    return -1;
+}
+
+// ----------------------------------------------------------------------
+// procdump: print brief table for ^P
+// ----------------------------------------------------------------------
+void
+procdump(void)
+{
+    static char *states[] = {
+        [UNUSED]   "unused",
+        [EMBRYO]   "embryo",
+        [SLEEPING] "sleep ",
+        [RUNNABLE] "runble",
+        [RUNNING]  "run   ",
+        [ZOMBIE]   "zombie",
+    };
+
+    struct proc *p;
+    char *state;
+
+    for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+        if (p->state == UNUSED)
+            continue;
+
+        if (p->state >= 0 && p->state < NELEM(states) && states[p->state])
+            state = states[p->state];
+        else
+            state = "???";
+
+        cprintf("%d %s %s\n", p->pid, state, p->name);
+    }
+
+    show_callstk("procdump: \n");
+}
