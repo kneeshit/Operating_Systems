@@ -1,91 +1,65 @@
-# xv6-pi5 Documentation
+##Plan and current status
 
-## Overview
-xv6-pi5 is a port of the MIT xv6 teaching operating system to the ARM architecture, with a focus on compatibility with the Raspberry Pi 5 platform. It provides a minimal Unix-like kernel, shell, file system, and basic user programs, serving as a hands-on resource for learning operating system fundamentals on ARM hardware.
+I’ve implemented most of your “Boosted Lottery Scheduler” assignment requirements and got the kernel building successfully.
 
-## Repository Structure
-| Path/Directory | Purpose |
-|----------------|---------|
-| `arm.c`, `arm.h` | ARM CPU initialization, context switching, MMU setup |
-| `asm.S` | Assembly routines for low-level CPU and trap handling |
-| `entry.S` | Kernel entry point and bootstrap code |
-| `swtch.S` | Context switch (process switching) assembly routine |
-| `trap_asm.S` | Trap and interrupt entry assembly |
-| `mmu.h` | ARM MMU and paging definitions |
-| `kernel.ld` | Linker script for ARM memory layout |
-| `initcode.S` | Minimal user-mode program for system initialization |
-| `device/` | Device drivers (UART, timer, interrupt controller, etc.) |
-| `console.c` | Console (UART) driver and kernel I/O |
-| `main.c`, `start.c` | Kernel initialization and main loop |
-| `Makefile` | Build system configuration for ARM toolchain |
-| `usr/` | User programs (e.g., sh, ls, cat, etc.) |
-| `tools/` | Build utilities (e.g., mkfs for file system creation) |
-| Other `.c`/`.h` | Core kernel subsystems (proc, vm, file system, etc.) |
+Key changes:
 
-## Getting Started
+   Lottery scheduler with boosts:
+   Added fields to struct proc: tickets, runticks, boostsleft, sleep_until, sleep_start
+   Implemented lottery-based scheduling in proc.c:scheduler(), selecting a RUNNABLE winner each tick
+   Boost logic:
+   When a proc sleeps on ticks, we record sleep_start; on wake we add slept ticks to boostsleft
+   Each lottery consumption decrements boostsleft for all RUNNABLE participants, including the winner (even if it became non-RUNNABLE during its timeslice)
+   Improved sleep/wakeup:
+   sys_sleep() sets proc->sleep_until = ticks + n and sleeps on &ticks
+   wakeup1() checks ticks >= p->sleep_until before waking sleeping processes on &ticks, preventing false wakeups
+   Randomness:
+   Added rand() and rseed to proc.c as specified
+   New syscalls:
+   settickets(pid, n): set base tickets of a process
+   srand(seed): set kernel rseed
+   getpinfo(struct pstat*): return inuse, pid, tickets, runticks, boostsleft for all table slots
+   Added kernel helpers sched_settickets and sched_getpinfo in proc.c for safe access to ptable from sysproc.c
+   Wired syscall numbers and stubs (syscall.h/c, usr/usys.S, usr/user.h)
+Build: make now completes successfully.
 
-### Prerequisites
-- **ARM GCC Toolchain**: `arm-none-eabi-gcc` (for ARMv6/ARMv7) or `aarch64-linux-gnu-gcc` (for ARMv8/AArch64, Pi 5).
-- **QEMU**: For ARM system emulation and testing.
-- **Make**: Standard build utility.
+#What I changed (high level)
+proc.h:
+Added lottery and sleep tracking fields to struct proc
+proc.c:
+Added rand(), hold_lottery_locked()
+Adjusted allocproc(), fork() to init and inherit tickets (no boost inheritance)
+Implemented lottery in scheduler()
+sleep(): record sleep_start for &ticks; on wake add slept ticks to boostsleft
+wakeup1(): gate wakeups for &ticks until ticks >= sleep_until
+Added exported helpers sched_settickets() and sched_getpinfo()
+sysproc.c:
+Rewrote sys_sleep() to use sleep_until logic without false wakeups
+Added sys_settickets(), sys_srand(), sys_getpinfo() delegating to kernel helpers
+syscall.h/c and userland:
+Added syscall numbers for settickets/srand/getpinfo
+Declared prototypes in usr/user.h and added usys.S entries
+pstat.h created in kernel and included from user (usr/pstat.h wrapper)
+Added sample user tool usr/pinfo.c and included it in usr/Makefile for testing
 
-### Building xv6-pi5
-1. **Clone the Repository**:
-   ```bash
-   git clone -b xv6-pi5 https://github.com/bobbysharma05/OS.git
-   cd OS/src
-   ```
-2. **Build the Kernel and User Programs**:
-   ```bash
-   make clean
-   make
-   ```
-3. **Run in QEMU**:
-   ```bash
-   qemu-system-arm -M versatilepb -m 128 -cpu arm1176 -nographic -kernel kernel.elf
-   ```
-   You should see the xv6 shell prompt: `$`
+#Notes and assumptions to validate
+Boost consumption policy: I decremented boostsleft for all RUNNABLE participants each lottery. This matches the examples’ intent that a process gets a fixed number of “favourable lotteries” after waking, independent of whether it wins those rounds. If you’d prefer only decrementing the winner’s boostsleft, we can adjust.
+Sleep accounting: I accumulate boosts if a process sleeps again before consuming all boostsleft (Example 2 behavior)
+First process tickets: init gets 1 ticket
+Children inherit base tickets from parent, not boostsleft
+No scheduling decisions on wake/arrival beyond marking RUNNABLE; selection occurs on next timer tick
 
-## Features
-- **Minimal Unix-like Kernel**: Process management, virtual memory, system calls.
-- **ARM Support**: All low-level CPU, trap, and MMU code adapted for ARM.
-- **Shell and Userland**: Simple shell and standard Unix utilities (ls, cat, echo, etc.).
-- **File System**: xv6-style file system with support for basic file operations.
-- **UART Console**: Serial console for kernel and shell I/O.
-- **QEMU Compatibility**: Easily testable in QEMU before deploying to hardware.
+#Next steps I can take
+Add a tiny user test to validate behaviour:
+Two procs with 1 vs 4 tickets; measure runticks ratio with getpinfo (after a while) to approximate 1:4
+Test boosted behaviour by sleep()ing one proc and checking boostsleft decreases across lotteries
+Refine any policy differences (e.g., whether to decrement boosts of non-winners)
 
-## Key ARM-Specific Components
-- **CPU and MMU Initialization**: Implemented in `arm.c`, `arm.h`, `mmu.h`, and associated assembly files. Handles setting up the ARM page tables, enabling the MMU, and configuring CPU modes.
-- **Trap and Interrupt Handling**: Assembly files (`asm.S`, `trap_asm.S`, `entry.S`) provide the trap vector and interrupt entry points. Kernel C code handles dispatch and processing.
-- **UART/Console**: `console.c` and device drivers in `device/` configure and use the Raspberry Pi’s UART for boot and shell interaction.
-- **Linker Script**: `kernel.ld` ensures the kernel is loaded at the correct physical address for ARM.
-
-## Porting Notes
-- **Architecture-Specific Files**: All files related to CPU initialization, assembly, MMU, and device drivers are ARM-specific and differ from the x86/RISC-V versions of xv6.
-- **Build System**: The `Makefile` and build scripts are set up for ARM toolchains. Adjust toolchain paths if necessary for your environment.
-- **Testing**: QEMU is used for initial bring-up. For real Raspberry Pi 5 hardware, further adaptation (especially for new peripherals) may be required.
-
-## Usage Example
-```bash
-$ ls
-.              1 1 512
-..             1 1 512
-cat            2 2 8620
-echo           2 3 8340
-grep           2 4 9528
-init           2 5 8560
-kill           2 6 8332
-ln             2 7 8364
-ls             2 8 9332
-mkdir          2 9 8412
-rm             2 10 8404
-sh             2 11 13532
-stressfs       2 12 8616
-usertests      2 13 32956
-wc             2 14 8904
-zombie         2 15 8184
-UNIX           2 16 7828
-console        3 17 0
-$
-```
-This demonstrates a successful boot, shell launch, and file system access.
+#How to see the new APIs from user space
+Prototypes in user.h:
+settickets(int pid, int n_tickets)
+void srand(uint seed)
+int getpinfo(struct pstat*)
+Example (usr/pinfo.c was added as a simple viewer):
+Build and run, then from shell: pinfo
+It lists pid, tickets, boostsleft, runticks for all procs
