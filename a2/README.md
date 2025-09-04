@@ -1,4 +1,4 @@
-##Plan and current status
+## Plan and current status
 
 I’ve implemented most of your “Boosted Lottery Scheduler” assignment requirements and got the kernel building successfully.
 
@@ -23,7 +23,7 @@ Key changes:
    Wired syscall numbers and stubs (syscall.h/c, usr/usys.S, usr/user.h)
 Build: make now completes successfully.
 
-#What I changed (high level)
+# What I changed (high level)
 proc.h:
 Added lottery and sleep tracking fields to struct proc
 proc.c:
@@ -42,20 +42,20 @@ Declared prototypes in usr/user.h and added usys.S entries
 pstat.h created in kernel and included from user (usr/pstat.h wrapper)
 Added sample user tool usr/pinfo.c and included it in usr/Makefile for testing
 
-#Notes and assumptions to validate
+# Notes and assumptions to validate
 Boost consumption policy: I decremented boostsleft for all RUNNABLE participants each lottery. This matches the examples’ intent that a process gets a fixed number of “favourable lotteries” after waking, independent of whether it wins those rounds. If you’d prefer only decrementing the winner’s boostsleft, we can adjust.
 Sleep accounting: I accumulate boosts if a process sleeps again before consuming all boostsleft (Example 2 behavior)
 First process tickets: init gets 1 ticket
 Children inherit base tickets from parent, not boostsleft
 No scheduling decisions on wake/arrival beyond marking RUNNABLE; selection occurs on next timer tick
 
-#Next steps I can take
+# Next steps I can take
 Add a tiny user test to validate behaviour:
 Two procs with 1 vs 4 tickets; measure runticks ratio with getpinfo (after a while) to approximate 1:4
 Test boosted behaviour by sleep()ing one proc and checking boostsleft decreases across lotteries
 Refine any policy differences (e.g., whether to decrement boosts of non-winners)
 
-#How to see the new APIs from user space
+# How to see the new APIs from user space
 Prototypes in user.h:
 settickets(int pid, int n_tickets)
 void srand(uint seed)
