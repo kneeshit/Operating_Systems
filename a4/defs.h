@@ -40,6 +40,9 @@ void            getcallerpcs(void *, uint*);
 void*           get_fp (void);
 void            show_callstk (char *);
 
+// barrier.c
+int             barrier_init(int);
+int             barrier_check(void);
 
 // bio.c
 void            binit(void);

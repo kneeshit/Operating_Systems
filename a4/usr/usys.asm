@@ -289,3 +289,113 @@ Disassembly of section .text:
  39c:	ef000000 	svc	0x00000000
  3a0:	e49d4004 	pop	{r4}		@ (ldr r4, [sp], #4)
  3a4:	e12fff1e 	bx	lr
+
+000003a8 <thread_create>:
+ 3a8:	e52d4004 	push	{r4}		@ (str r4, [sp, #-4]!)
+ 3ac:	e1a04003 	mov	r4, r3
+ 3b0:	e1a03002 	mov	r3, r2
+ 3b4:	e1a02001 	mov	r2, r1
+ 3b8:	e1a01000 	mov	r1, r0
+ 3bc:	e3a0001b 	mov	r0, #27
+ 3c0:	ef000000 	svc	0x00000000
+ 3c4:	e49d4004 	pop	{r4}		@ (ldr r4, [sp], #4)
+ 3c8:	e12fff1e 	bx	lr
+
+000003cc <thread_exit>:
+ 3cc:	e52d4004 	push	{r4}		@ (str r4, [sp, #-4]!)
+ 3d0:	e1a04003 	mov	r4, r3
+ 3d4:	e1a03002 	mov	r3, r2
+ 3d8:	e1a02001 	mov	r2, r1
+ 3dc:	e1a01000 	mov	r1, r0
+ 3e0:	e3a0001c 	mov	r0, #28
+ 3e4:	ef000000 	svc	0x00000000
+ 3e8:	e49d4004 	pop	{r4}		@ (ldr r4, [sp], #4)
+ 3ec:	e12fff1e 	bx	lr
+
+000003f0 <thread_join>:
+ 3f0:	e52d4004 	push	{r4}		@ (str r4, [sp, #-4]!)
+ 3f4:	e1a04003 	mov	r4, r3
+ 3f8:	e1a03002 	mov	r3, r2
+ 3fc:	e1a02001 	mov	r2, r1
+ 400:	e1a01000 	mov	r1, r0
+ 404:	e3a0001d 	mov	r0, #29
+ 408:	ef000000 	svc	0x00000000
+ 40c:	e49d4004 	pop	{r4}		@ (ldr r4, [sp], #4)
+ 410:	e12fff1e 	bx	lr
+
+00000414 <waitpid>:
+ 414:	e52d4004 	push	{r4}		@ (str r4, [sp, #-4]!)
+ 418:	e1a04003 	mov	r4, r3
+ 41c:	e1a03002 	mov	r3, r2
+ 420:	e1a02001 	mov	r2, r1
+ 424:	e1a01000 	mov	r1, r0
+ 428:	e3a0001e 	mov	r0, #30
+ 42c:	ef000000 	svc	0x00000000
+ 430:	e49d4004 	pop	{r4}		@ (ldr r4, [sp], #4)
+ 434:	e12fff1e 	bx	lr
+
+00000438 <barrier_init>:
+ 438:	e52d4004 	push	{r4}		@ (str r4, [sp, #-4]!)
+ 43c:	e1a04003 	mov	r4, r3
+ 440:	e1a03002 	mov	r3, r2
+ 444:	e1a02001 	mov	r2, r1
+ 448:	e1a01000 	mov	r1, r0
+ 44c:	e3a0001f 	mov	r0, #31
+ 450:	ef000000 	svc	0x00000000
+ 454:	e49d4004 	pop	{r4}		@ (ldr r4, [sp], #4)
+ 458:	e12fff1e 	bx	lr
+
+0000045c <barrier_check>:
+ 45c:	e52d4004 	push	{r4}		@ (str r4, [sp, #-4]!)
+ 460:	e1a04003 	mov	r4, r3
+ 464:	e1a03002 	mov	r3, r2
+ 468:	e1a02001 	mov	r2, r1
+ 46c:	e1a01000 	mov	r1, r0
+ 470:	e3a00020 	mov	r0, #32
+ 474:	ef000000 	svc	0x00000000
+ 478:	e49d4004 	pop	{r4}		@ (ldr r4, [sp], #4)
+ 47c:	e12fff1e 	bx	lr
+
+00000480 <sleepChan>:
+ 480:	e52d4004 	push	{r4}		@ (str r4, [sp, #-4]!)
+ 484:	e1a04003 	mov	r4, r3
+ 488:	e1a03002 	mov	r3, r2
+ 48c:	e1a02001 	mov	r2, r1
+ 490:	e1a01000 	mov	r1, r0
+ 494:	e3a00024 	mov	r0, #36	@ 0x24
+ 498:	ef000000 	svc	0x00000000
+ 49c:	e49d4004 	pop	{r4}		@ (ldr r4, [sp], #4)
+ 4a0:	e12fff1e 	bx	lr
+
+000004a4 <getChannel>:
+ 4a4:	e52d4004 	push	{r4}		@ (str r4, [sp, #-4]!)
+ 4a8:	e1a04003 	mov	r4, r3
+ 4ac:	e1a03002 	mov	r3, r2
+ 4b0:	e1a02001 	mov	r2, r1
+ 4b4:	e1a01000 	mov	r1, r0
+ 4b8:	e3a00025 	mov	r0, #37	@ 0x25
+ 4bc:	ef000000 	svc	0x00000000
+ 4c0:	e49d4004 	pop	{r4}		@ (ldr r4, [sp], #4)
+ 4c4:	e12fff1e 	bx	lr
+
+000004c8 <sigChan>:
+ 4c8:	e52d4004 	push	{r4}		@ (str r4, [sp, #-4]!)
+ 4cc:	e1a04003 	mov	r4, r3
+ 4d0:	e1a03002 	mov	r3, r2
+ 4d4:	e1a02001 	mov	r2, r1
+ 4d8:	e1a01000 	mov	r1, r0
+ 4dc:	e3a00026 	mov	r0, #38	@ 0x26
+ 4e0:	ef000000 	svc	0x00000000
+ 4e4:	e49d4004 	pop	{r4}		@ (ldr r4, [sp], #4)
+ 4e8:	e12fff1e 	bx	lr
+
+000004ec <sigOneChan>:
+ 4ec:	e52d4004 	push	{r4}		@ (str r4, [sp, #-4]!)
+ 4f0:	e1a04003 	mov	r4, r3
+ 4f4:	e1a03002 	mov	r3, r2
+ 4f8:	e1a02001 	mov	r2, r1
+ 4fc:	e1a01000 	mov	r1, r0
+ 500:	e3a00027 	mov	r0, #39	@ 0x27
+ 504:	ef000000 	svc	0x00000000
+ 508:	e49d4004 	pop	{r4}		@ (ldr r4, [sp], #4)
+ 50c:	e12fff1e 	bx	lr
