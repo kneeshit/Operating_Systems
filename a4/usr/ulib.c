@@ -132,37 +132,75 @@ memmove(void *vdst, void *vsrc, int n)
     return vdst;
 }
 
-// Synchronization primitives - placeholder implementations
+// Synchronization primitives
 void initiateLock(struct lock* l) {
     l->lockvar = 0;
     l->isInitiated = 1;
 }
 
+// Atomic exchange function for ARM
+static int
+xchg(volatile int *addr, int newval)
+{
+    // Use GCC built-in atomic operation
+    return __sync_lock_test_and_set(addr, newval);
+}
+
 void acquireLock(struct lock* l) {
-    // Simple busy-wait spin lock (not efficient, just for testing)
-    while(__sync_lock_test_and_set(&l->lockvar, 1) == 1) {
-        sleep(1);  // yield processor
+    if (!l->isInitiated) {
+        return; // Lock not initialized
+    }
+    
+    // Spin until we can acquire the lock
+    while (xchg(&l->lockvar, 1) != 0) {
+        // Busy wait - spin
     }
 }
 
 void releaseLock(struct lock* l) {
-    __sync_lock_release(&l->lockvar);
+    if (!l->isInitiated) {
+        return; // Lock not initialized
+    }
+    
+    if (l->lockvar != 1) {
+        return; // Lock not acquired
+    }
+    
+    // Release the lock
+    l->lockvar = 0;
 }
 
 void initiateCondVar(struct condvar* cv) {
-    cv->var = 0;
+    cv->var = getChannel();  // Get a unique channel
     cv->isInitiated = 1;
 }
 
 void condWait(struct condvar* cv, struct lock* l) {
-    // Basic condition variable implementation - placeholder
+    if (!cv->isInitiated || !l->isInitiated) {
+        return;  // Not initialized
+    }
+    
+    // Release the lock, sleep on the channel, then reacquire the lock
     releaseLock(l);
     sleepChan(cv->var);
     acquireLock(l);
 }
 
 void broadcast(struct condvar* cv) {
-    sigChan(cv->var);
+    if (!cv->isInitiated) {
+        return;  // Not initialized
+    }
+    
+    sigChan(cv->var);  // Wake up all threads waiting on this condition variable
+}
+
+// Signal (wake up one thread) - this function was missing
+void signal(struct condvar* cv) {
+    if (!cv->isInitiated) {
+        return;  // Not initialized
+    }
+    
+    sigOneChan(cv->var);  // Wake up one thread waiting on this condition variable
 }
 
 void semInit(struct semaphore* s, int initVal) {
@@ -175,14 +213,14 @@ void semInit(struct semaphore* s, int initVal) {
 void semUp(struct semaphore* s) {
     acquireLock(&s->l);
     s->ctr++;
-    broadcast(&s->cv);
+    signal(&s->cv);  // Wake up exactly one process
     releaseLock(&s->l);
 }
 
 void semDown(struct semaphore* s) {
     acquireLock(&s->l);
-    while(s->ctr <= 0) {
-        condWait(&s->cv, &s->l);
+    while (s->ctr <= 0) {
+        condWait(&s->cv, &s->l);  // This releases and reacquires the lock
     }
     s->ctr--;
     releaseLock(&s->l);

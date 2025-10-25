@@ -53,7 +53,7 @@ struct backcmd {
 };
 
 int fork1(void);  // Fork but panics on failure.
-void panic(char*);
+void panic(char*) __attribute__((noreturn));
 struct cmd *parsecmd(char*);
 
 // helper prototypes for tab completion
@@ -85,7 +85,7 @@ runcmd(struct cmd *cmd)
                 exit();
             exec(ecmd->argv[0], ecmd->argv);
             printf(2, "exec %s failed\n", ecmd->argv[0]);
-            break;
+            exit();
             
         case REDIR:
             rcmd = (struct redircmd*)cmd;
@@ -95,7 +95,7 @@ runcmd(struct cmd *cmd)
                 exit();
             }
             runcmd(rcmd->cmd);
-            break;
+            // runcmd never returns
             
         case LIST:
             lcmd = (struct listcmd*)cmd;
@@ -103,7 +103,7 @@ runcmd(struct cmd *cmd)
                 runcmd(lcmd->left);
             wait();
             runcmd(lcmd->right);
-            break;
+            // runcmd never returns
             
         case PIPE:
             pcmd = (struct pipecmd*)cmd;
@@ -225,6 +225,7 @@ main(void)
 }
 
 void
+__attribute__((noreturn))
 panic(char *s)
 {
     printf(2, "%s\n", s);

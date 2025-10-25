@@ -91,6 +91,11 @@ found:
     p->sleep_until = 0;
     p->sleep_start = 0;
 
+    // Initialize thread fields
+    p->is_thread = 0;           // default to main process
+    p->main_thread = 0;         // no main thread by default
+    p->thread_stack = 0;        // no thread stack by default
+
     release(&ptable.lock);
 
     // Allocate kernel stack.
@@ -274,6 +279,10 @@ fork(void)
     int i, pid;
     struct proc *np;
 
+    // Threads cannot fork - only main processes can
+    if (proc->is_thread)
+        return -1;
+
     // Allocate process.
     if ((np = allocproc()) == 0)
         return -1;
@@ -322,6 +331,50 @@ exit(void)
     if (proc == initproc)
         panic("init exiting");
 
+    // Only main threads should call exit - threads should call thread_exit
+    if (proc->is_thread) {
+        thread_exit();
+        return; // not reached
+    }
+
+    // For main threads: wait for all threads to finish
+    acquire(&ptable.lock);
+    for (;;) {
+        int has_threads = 0;
+        
+        // Check if any threads are still running
+        for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+            if (p->is_thread && p->main_thread == proc && p->state != ZOMBIE && p->state != UNUSED) {
+                has_threads = 1;
+                break;
+            }
+        }
+        
+        if (!has_threads)
+            break;
+            
+        // Sleep and wait for threads to finish
+        sleep(proc, &ptable.lock);
+    }
+    
+    // Clean up zombie threads
+    for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+        if (p->is_thread && p->main_thread == proc && p->state == ZOMBIE) {
+            // Free thread's kernel stack
+            free_page(p->kstack);
+            p->kstack = 0;
+            p->state = UNUSED;
+            p->pid = 0;
+            p->parent = 0;
+            p->name[0] = 0;
+            p->killed = 0;
+            p->is_thread = 0;
+            p->main_thread = 0;
+            p->thread_stack = 0;
+        }
+    }
+    release(&ptable.lock);
+
     // Close all files.
     for (fd = 0; fd < NOFILE; fd++) {
         if (proc->ofile[fd]) {
@@ -367,7 +420,8 @@ wait(void)
         havekids = 0;
 
         for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
-            if (p->parent != proc)
+            // Only wait for child processes, not threads
+            if (p->parent != proc || p->is_thread)
                 continue;
             havekids = 1;
             if (p->state == ZOMBIE) {
@@ -377,7 +431,6 @@ wait(void)
                 p->kstack = 0;
                 freevm(p->pgdir);
                 p->state = UNUSED;
-// returns a pointer to the lottery winner among RUNNABLE processes
 
                 p->pid = 0;
                 p->parent = 0;
@@ -728,4 +781,256 @@ sys_dumppagetable(void)
 
   cprintf("--- End of Dump ---\n");
   return 0;
+}
+
+// ----------------------------------------------------------------------
+// Channel functions for condition variables
+// ----------------------------------------------------------------------
+
+static int next_channel = 1000;  // Start channels from 1000 to avoid conflicts
+
+// Get a unique channel number
+int getChannel(void)
+{
+    int chan;
+    
+    acquire(&ptable.lock);
+    chan = next_channel++;
+    release(&ptable.lock);
+    
+    return chan;
+}
+
+// Sleep on a specific channel
+int sleepChan(int chan)
+{
+    if (chan <= 0) {
+        return -1;  // Invalid channel
+    }
+    
+    acquire(&ptable.lock);
+    sleep((void*)chan, &ptable.lock);
+    release(&ptable.lock);
+    
+    return 0;
+}
+
+// Wake up all processes sleeping on a channel
+int sigChan(int chan)
+{
+    if (chan <= 0) {
+        return -1;  // Invalid channel
+    }
+    
+    wakeup((void*)chan);
+    return 0;
+}
+
+// Wake up one process sleeping on a channel
+int sigOneChan(int chan)
+{
+    struct proc *p;
+    
+    if (chan <= 0) {
+        return -1;  // Invalid channel
+    }
+    
+    acquire(&ptable.lock);
+    
+    // Find one process sleeping on this channel and wake it up
+    for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+        if (p->state == SLEEPING && p->chan == (void*)chan) {
+            p->state = RUNNABLE;
+            break;  // Only wake up one process
+        }
+    }
+    
+    release(&ptable.lock);
+    return 0;
+}
+
+// ----------------------------------------------------------------------
+// Thread functions
+// ----------------------------------------------------------------------
+
+// Create a new thread that shares memory with the calling process
+int thread_create(uint* thread, void* (*start_routine)(void*), void* arg)
+{
+    int i;
+    struct proc *nt; // new thread
+    uint sp, ustack_addr;
+
+    // Only main threads can create new threads
+    if (proc->is_thread) {
+        return -1;
+    }
+
+    // Allocate new thread process structure
+    if ((nt = allocproc()) == 0) {
+        return -1;
+    }
+
+    // Share page table with current process
+    nt->pgdir = proc->pgdir;
+    nt->parent = proc->parent; // same parent as the main thread
+    
+    // Set up thread-specific fields
+    nt->is_thread = 1;
+    nt->main_thread = proc;
+
+    // Allocate a new page for the thread's user stack
+    // We'll place it at the top of the address space, growing down
+    ustack_addr = proc->sz;
+    if ((proc->sz = allocuvm(proc->pgdir, proc->sz, proc->sz + PGSIZE)) == 0) {
+        free_page(nt->kstack);
+        nt->kstack = 0;
+        nt->state = UNUSED;
+        return -1;
+    }
+    nt->sz = proc->sz;
+    nt->thread_stack = (char*)ustack_addr;
+
+    // Copy trapframe from current process
+    *nt->tf = *proc->tf;
+
+    // Set up the new thread's stack and entry point
+    sp = ustack_addr + PGSIZE; // start at top of stack page
+    
+    // In ARM, arguments are passed in registers, not on stack
+    // Set up stack pointer and program counter
+    nt->tf->sp_usr = sp;
+    nt->tf->pc = (uint)start_routine; // entry point is the function
+    
+    // Pass the argument in r0 register
+    nt->tf->r0 = (uint)arg;
+
+    // Copy file descriptors
+    for (i = 0; i < NOFILE; i++) {
+        if (proc->ofile[i])
+            nt->ofile[i] = filedup(proc->ofile[i]);
+    }
+    nt->cwd = idup(proc->cwd);
+
+    // Copy thread id to user space
+    int tid = nt->pid;
+    if (copyout(proc->pgdir, (uint)thread, &tid, sizeof(tid)) < 0) {
+        deallocuvm(proc->pgdir, proc->sz, proc->sz - PGSIZE);
+        proc->sz -= PGSIZE;
+        free_page(nt->kstack);
+        nt->kstack = 0;
+        nt->state = UNUSED;
+        return -1;
+    }
+
+    // Set thread as runnable
+    acquire(&ptable.lock);
+    nt->state = RUNNABLE;
+    release(&ptable.lock);
+
+    safestrcpy(nt->name, proc->name, sizeof(nt->name));
+    return nt->pid;
+}
+
+// Exit from a thread (no-op for main threads)
+void thread_exit(void)
+{
+    struct proc *p;
+
+    // Only threads should call this, not main processes
+    if (!proc->is_thread) {
+        return; // no-op for main thread
+    }
+
+    // Close all files
+    for (int fd = 0; fd < NOFILE; fd++) {
+        if (proc->ofile[fd]) {
+            fileclose(proc->ofile[fd]);
+            proc->ofile[fd] = 0;
+        }
+    }
+
+    iput(proc->cwd);
+    proc->cwd = 0;
+
+    acquire(&ptable.lock);
+
+    // Wake up any threads waiting to join this thread
+    wakeup1((void*)proc->pid);
+    
+    // Wake up the main thread in case it's waiting in exit()
+    if (proc->main_thread) {
+        wakeup1(proc->main_thread);
+    }
+
+    // Reparent any children to init (shouldn't happen with threads)
+    for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+        if (p->parent == proc) {
+            p->parent = initproc;
+            if (p->state == ZOMBIE)
+                wakeup1(initproc);
+        }
+    }
+
+    // Become zombie and schedule out
+    proc->state = ZOMBIE;
+    sched();
+    panic("zombie thread exit");
+}
+
+// Wait for a thread to exit
+int thread_join(uint thread)
+{
+    struct proc *p;
+    int found = 0;
+
+    // Only main threads can join other threads
+    if (proc->is_thread) {
+        return -1;
+    }
+
+    acquire(&ptable.lock);
+    
+    for (;;) {
+        // Look for the thread to join
+        found = 0;
+        for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+            if (p->pid != thread || !p->is_thread || p->main_thread != proc)
+                continue;
+            
+            found = 1;
+            
+            if (p->state == ZOMBIE) {
+                // Thread is done, reap it
+                // Free the thread's user stack by deallocating one page
+                deallocuvm(proc->pgdir, proc->sz, proc->sz - PGSIZE);
+                proc->sz -= PGSIZE;
+                
+                // Free the thread's kernel stack
+                free_page(p->kstack);
+                p->kstack = 0;
+                
+                // Mark as unused
+                p->state = UNUSED;
+                p->pid = 0;
+                p->parent = 0;
+                p->name[0] = 0;
+                p->killed = 0;
+                p->is_thread = 0;
+                p->main_thread = 0;
+                p->thread_stack = 0;
+                
+                release(&ptable.lock);
+                return 0;
+            }
+        }
+
+        // No such thread exists or it's not our thread
+        if (!found || proc->killed) {
+            release(&ptable.lock);
+            return -1;
+        }
+
+        // Sleep waiting for thread to exit
+        sleep((void*)thread, &ptable.lock);
+    }
 }

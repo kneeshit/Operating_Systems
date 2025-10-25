@@ -93,6 +93,11 @@ struct proc {
     // Sleep accounting fields
     uint            sleep_until;    // absolute tick when sys_sleep should wake
     uint            sleep_start;    // tick when process entered SLEEPING
+
+    // Thread support fields
+    int             is_thread;      // 1 if this is a thread, 0 if main process
+    struct proc*    main_thread;    // pointer to main thread (for threads only)
+    char*           thread_stack;   // user stack for this thread (threads only)
 };
 
 // Process memory is laid out contiguously, low addresses first:

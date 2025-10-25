@@ -3,7 +3,7 @@ struct stat;
 
 // system calls
 int fork(void);
-int exit(void);
+int exit(void) __attribute__((noreturn));
 int wait(void);
 int pipe(int*);
 int write(int, void*, int);
@@ -85,6 +85,7 @@ void releaseLock(struct lock* l);
 void initiateCondVar(struct condvar* cv);
 void condWait(struct condvar* cv, struct lock* l);
 void broadcast(struct condvar* cv);
+void signal(struct condvar* cv);
 void semInit(struct semaphore* s, int initVal);
 void semUp(struct semaphore* s);
 void semDown(struct semaphore* s);

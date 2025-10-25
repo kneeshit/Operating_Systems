@@ -38,6 +38,9 @@ UPROGS=\
 	_t_sem2\
 	_t_sleepwake\
 	_t_waitpid\
+	_test_simple_thread\
+	_test_cv\
+	_test_semaphore\
 
 all: $(FS_IMAGE)
 

@@ -142,6 +142,17 @@ int             wait(void);
 void            wakeup(void*);
 void            yield(void);
 
+// thread functions
+int             thread_create(uint* thread, void* (*start_routine)(void*), void* arg);
+void            thread_exit(void);
+int             thread_join(uint thread);
+
+// channel functions for condition variables
+int             getChannel(void);
+int             sleepChan(int chan);
+int             sigChan(int chan);
+int             sigOneChan(int chan);
+
 // lottery scheduler helpers
 int             sched_settickets(int pid, int n);
 int             sched_getpinfo(struct pstat *ps);
